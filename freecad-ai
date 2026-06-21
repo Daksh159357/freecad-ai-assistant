@@ -1,0 +1,13 @@
+#!/bin/bash
+# Absolute paths to make it runnable from anywhere
+APPIMAGE_PATH="/home/kali/.gemini/antigravity/scratch/freecad_gemini/FreeCAD.AppImage"
+MACRO_PATH="/home/kali/.local/share/FreeCAD/v1-1/Macro/GeminiAssistant.FCMacro"
+
+if [ -f "$APPIMAGE_PATH" ] && [ -f "$MACRO_PATH" ]; then
+    echo "Launching FreeCAD with Gemini AI Macro..."
+    "$APPIMAGE_PATH" "$MACRO_PATH" "$@"
+else
+    echo "Error: FreeCAD AppImage or Macro not found at absolute paths."
+    echo "AppImage: $APPIMAGE_PATH"
+    echo "Macro: $MACRO_PATH"
+fi

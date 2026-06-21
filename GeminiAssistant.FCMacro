@@ -1,0 +1,272 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import json
+import urllib.request
+import os
+import re
+import html
+
+# Try to import Qt modules depending on the FreeCAD version
+try:
+    from PySide6 import QtWidgets, QtCore, QtGui
+except ImportError:
+    try:
+        from PySide2 import QtWidgets, QtCore, QtGui
+    except ImportError:
+        try:
+            from PyQt5 import QtWidgets, QtCore, QtGui
+        except ImportError:
+            from PySide import QtGui as QtWidgets, QtCore, QtGui
+
+class GeminiAssistant(QtWidgets.QWidget):
+    def __init__(self):
+        super(GeminiAssistant, self).__init__()
+        
+        self.api_key_file = os.path.join(os.path.expanduser("~"), ".gemini_freecad_apikey.txt")
+        self.claude_key_file = os.path.join(os.path.expanduser("~"), ".claude_freecad_apikey.txt")
+        
+        layout = QtWidgets.QVBoxLayout(self)
+        
+        # Provider Selection
+        self.provider_label = QtWidgets.QLabel("AI Provider:")
+        layout.addWidget(self.provider_label)
+        self.provider_select = QtWidgets.QComboBox()
+        self.provider_select.addItems(["Gemini", "Claude"])
+        self.provider_select.currentIndexChanged.connect(self.on_provider_changed)
+        layout.addWidget(self.provider_select)
+        
+        # API Key
+        self.api_label = QtWidgets.QLabel("Gemini API Key:")
+        layout.addWidget(self.api_label)
+        self.api_input = QtWidgets.QLineEdit()
+        self.api_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        layout.addWidget(self.api_input)
+        
+        # Model Selection
+        self.model_label = QtWidgets.QLabel("Model:")
+        layout.addWidget(self.model_label)
+        self.model_select = QtWidgets.QComboBox()
+        layout.addWidget(self.model_select)
+        
+        # Initialize provider-specific values
+        self.on_provider_changed()
+        
+        # Prompt
+        self.prompt_label = QtWidgets.QLabel("What would you like to design?")
+        layout.addWidget(self.prompt_label)
+        self.prompt_input = QtWidgets.QTextEdit()
+        self.prompt_input.setPlaceholderText("Create a 50mm gear with 12 teeth using PartDesign...")
+        layout.addWidget(self.prompt_input)
+        
+        # Auto-execute
+        self.auto_exec_cb = QtWidgets.QCheckBox("Auto-Execute Code (Warning: runs immediately)")
+        self.auto_exec_cb.setChecked(True)
+        layout.addWidget(self.auto_exec_cb)
+        
+        # Button
+        self.generate_btn = QtWidgets.QPushButton("Generate Code")
+        self.generate_btn.clicked.connect(self.generate_design)
+        layout.addWidget(self.generate_btn)
+        
+        self.history = []
+        
+        # Output Log (Chat History)
+        self.log_area = QtWidgets.QTextBrowser()
+        self.log_area.setOpenExternalLinks(True)
+        layout.addWidget(self.log_area)
+
+    def on_provider_changed(self):
+        provider = self.provider_select.currentText()
+        self.model_select.clear()
+        
+        if provider == "Gemini":
+            self.api_label.setText("Gemini API Key:")
+            self.model_select.addItems([
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.0-flash",
+                "gemini-3.1-pro-preview"
+            ])
+            # Load Gemini API key
+            if os.path.exists(self.api_key_file):
+                with open(self.api_key_file, "r") as f:
+                    self.api_input.setText(f.read().strip())
+            else:
+                self.api_input.clear()
+        elif provider == "Claude":
+            self.api_label.setText("Claude API Key:")
+            self.model_select.addItems([
+                "claude-3-5-sonnet-latest",
+                "claude-3-5-haiku-latest",
+                "claude-3-opus-latest"
+            ])
+            # Load Claude API key
+            if os.path.exists(self.claude_key_file):
+                with open(self.claude_key_file, "r") as f:
+                    self.api_input.setText(f.read().strip())
+            else:
+                self.api_input.clear()
+
+    def log(self, text, is_user=False):
+        color = "#3498db" if is_user else "#2ecc71"
+        sender = "You" if is_user else "Assistant"
+        
+        # Escape HTML characters so code/errors display correctly
+        escaped_text = html.escape(str(text)).replace('\n', '<br>')
+        
+        html_str = f'<b><font color="{color}">{sender}:</font></b><br><pre>{escaped_text}</pre><br><hr>'
+        self.log_area.append(html_str)
+        App.Console.PrintMessage(f"[{sender}] {text}\n")
+
+    def generate_design(self):
+        provider = self.provider_select.currentText()
+        api_key = self.api_input.text().strip()
+        model = self.model_select.currentText()
+        prompt = self.prompt_input.toPlainText().strip()
+        
+        if not api_key:
+            self.log(f"Error: Please provide a {provider} API Key.")
+            return
+            
+        if not prompt:
+            self.log("Error: Please enter a prompt.")
+            return
+
+        # Save appropriate key
+        if provider == "Gemini":
+            with open(self.api_key_file, "w") as f:
+                f.write(api_key)
+        else:
+            with open(self.claude_key_file, "w") as f:
+                f.write(api_key)
+
+        self.log(prompt, is_user=True)
+        self.prompt_input.clear()
+        self.generate_btn.setEnabled(False)
+        QtWidgets.QApplication.processEvents()
+        
+        system_prompt = """You are a FreeCAD Python expert assisting the user in a chat. Generate Python code to create the requested 3D model.
+Rules:
+1. ONLY return the python code block starting with ```python and ending with ```.
+2. DO NOT explain the code or add any other text.
+3. Import all necessary FreeCAD modules (FreeCAD, Part, PartDesign, etc.).
+4. Always create a new document if one is not active.
+5. Recompute the document at the end (App.ActiveDocument.recompute()).
+6. Make sure it is valid FreeCAD python macro code.
+"""
+        
+        # Append user prompt to history
+        self.history.append({"role": "user", "text": prompt})
+        
+        try:
+            if provider == "Gemini":
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                
+                # Format Gemini payload
+                gemini_contents = []
+                for turn in self.history:
+                    gemini_role = "user" if turn["role"] == "user" else "model"
+                    gemini_contents.append({
+                        "role": gemini_role,
+                        "parts": [{"text": turn["text"]}]
+                    })
+                    
+                payload = {
+                    "systemInstruction": {
+                        "parts": [{"text": system_prompt}]
+                    },
+                    "contents": gemini_contents
+                }
+                
+                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), method='POST')
+                req.add_header('Content-Type', 'application/json')
+                
+            else:  # Claude
+                url = "https://api.anthropic.com/v1/messages"
+                
+                # Format Claude payload
+                claude_messages = []
+                for turn in self.history:
+                    claude_role = "user" if turn["role"] == "user" else "assistant"
+                    claude_messages.append({
+                        "role": claude_role,
+                        "content": turn["text"]
+                    })
+                    
+                payload = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "system": system_prompt,
+                    "messages": claude_messages
+                }
+                
+                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), method='POST')
+                req.add_header('x-api-key', api_key)
+                req.add_header('anthropic-version', '2023-06-01')
+                req.add_header('content-type', 'application/json')
+                
+            with urllib.request.urlopen(req) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                
+            if provider == "Gemini":
+                text_response = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            else:
+                text_response = result.get('content', [{}])[0].get('text', '')
+                
+            self.history.append({"role": "assistant", "text": text_response})
+            
+            code_match = re.search(r'```python\n(.*?)\n```', text_response, re.DOTALL)
+            code = code_match.group(1) if code_match else text_response.replace('```python', '').replace('```', '').strip()
+                
+            self.log("Code generated! Executing now...")
+            
+            if self.auto_exec_cb.isChecked() and code:
+                try:
+                    # Provide global context so FreeCAD imports work smoothly
+                    exec(code, globals(), globals())
+                    
+                    # Refresh the view so the user actually sees the 3D object
+                    if Gui.ActiveDocument and Gui.ActiveDocument.ActiveView:
+                        Gui.ActiveDocument.ActiveView.viewAxometric()
+                        Gui.ActiveDocument.ActiveView.fitAll()
+                        
+                    self.log("Done! Check your 3D view. You can ask me to modify it further!")
+                except Exception as e:
+                    self.log(f"Error executing code: {str(e)}")
+            else:
+                self.log("Code generated but not executed.\n\n" + code)
+                
+        except Exception as e:
+            err_msg = str(e)
+            if hasattr(e, 'read'):
+                try:
+                    err_msg += "\n" + e.read().decode('utf-8')
+                except:
+                    pass
+            self.log(f"API Error: {err_msg}")
+            if self.history:
+                self.history.pop()  # Remove last prompt if it failed
+            
+        self.generate_btn.setEnabled(True)
+
+if __name__ == "__main__":
+    if App.GuiUp:
+        mw = Gui.getMainWindow()
+        
+        # Check if dock already exists to avoid duplicates
+        dock_name = "Gemini3DDockWidget"
+        existing_dock = mw.findChild(QtWidgets.QDockWidget, dock_name)
+        if existing_dock:
+            mw.removeDockWidget(existing_dock)
+            existing_dock.deleteLater()
+            
+        dock = QtWidgets.QDockWidget("AI Chat Assistant", mw)
+        dock.setObjectName(dock_name)
+        assistant = GeminiAssistant()
+        dock.setWidget(assistant)
+        
+        # Add to right dock area natively inside the FreeCAD window
+        mw.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+        dock.show()
+    else:
+        print("This macro must be run within the FreeCAD GUI.")

@@ -1,0 +1,8 @@
+#!/bin/bash
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+if [ -d "$DIR/squashfs-root" ]; then
+    echo "Launching extracted FreeCAD AppImage..."
+    "$DIR/squashfs-root/AppRun" "$@"
+else
+    echo "Error: FreeCAD is not extracted yet."
+fi

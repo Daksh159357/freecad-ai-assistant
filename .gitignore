@@ -1,0 +1,18 @@
+# Ignore massive FreeCAD binaries, source tree, and extracted folders
+FreeCAD/
+squashfs-root/
+FreeCAD-raw.AppImage
+
+# Ignore sub-repositories
+freecad-ai-assistant/
+
+# Ignore API keys and local credentials
+*apikey.txt
+.gemini_freecad_apikey.txt
+.claude_freecad_apikey.txt
+.gemini/
+
+# Ignore Python and OS cache files
+__pycache__/
+*.pyc
+.DS_Store
